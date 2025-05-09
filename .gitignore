@@ -13,6 +13,9 @@ ENV/
 # Downloaded files
 downloads/
 
+# Data directory
+data/
+
 # Logs
 *.log
 bot.log

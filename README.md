@@ -1,15 +1,20 @@
 # Music Search Bot
 
-A Telegram bot that helps you search and download music from YouTube.
+A powerful Telegram bot that helps you search and download music from YouTube with advanced features and detailed statistics.
 
-## Features
+## 🌟 Features
 
-- 🔍 Search for songs on YouTube
-- 🎵 Download high-quality audio
-- 🚀 Fast and reliable
-- 🎧 Easy to use interface
+- 🔍 Smart YouTube music search
+- 🎵 High-quality audio downloads
+- 📊 Detailed search results with:
+  - Song duration
+  - View count
+  - Artist information
+- 📈 Comprehensive statistics tracking
+- 🛡️ Robust error handling
+- 📝 Detailed logging system
 
-## Setup
+## 🚀 Setup
 
 1. Clone the repository:
 ```bash
@@ -38,24 +43,78 @@ echo "BOT_TOKEN=your_bot_token_here" > .env
 python main.py
 ```
 
-
-## Usage
+## 📱 Usage
 
 1. Start a chat with your bot on Telegram
-2. Send `/start` to see the welcome message
-3. Use `/search <song name>` to search for songs
-4. Click on a song to download it
+2. Use the following commands:
 
-## Commands
+### Commands
 
-- `/start` - Start the bot
-- `/help` - Show help message
+- `/start` - Start the bot and see welcome message
+- `/help` - Show detailed help message
 - `/search <song name>` - Search for a song
+- `/stats` - View bot statistics
 
-## Contributing
+### Search Examples
 
-Feel free to submit issues and pull requests.
+```
+/search shape of you
+/search blinding lights the weeknd
+/search sunflower post malone
+```
 
-## License
+### Search Results
+
+Each search result shows:
+- 🎵 Song title
+- 👤 Artist name
+- ⏱ Duration
+- 👁 View count
+
+## 📊 Statistics
+
+The bot tracks various statistics including:
+- Total searches
+- Total downloads
+- Popular searches
+- Popular artists
+- Error rates
+
+View statistics using the `/stats` command.
+
+## 📁 Data Storage
+
+The bot stores data in the following structure:
+```
+data/
+├── search_log.json    # Search history
+├── download_log.json  # Download history
+├── error_log.json     # Error tracking
+├── stats.json        # Statistics
+└── bot.log          # Detailed logs
+```
+
+## 🔧 Error Handling
+
+The bot includes comprehensive error handling for:
+- Invalid search queries
+- No results found
+- Download failures
+- Network issues
+
+## 📝 Logging
+
+Detailed logging system that tracks:
+- User actions
+- Search queries
+- Downloads
+- Errors
+- System events
+
+## 🤝 Contributing
+
+Feel free to submit issues and pull requests. All contributions are welcome!
+
+## 📄 License
 
 MIT License 

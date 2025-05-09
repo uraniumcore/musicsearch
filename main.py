@@ -5,17 +5,27 @@ import requests
 import logging
 import yt_dlp
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 import certifi
 from dotenv import load_dotenv
+from data_recorder import DataRecorder
+from datetime import datetime
+import re
 
 # Load environment variables
 load_dotenv()
 
-# Configure logging
+# Initialize data recorder
+data_recorder = DataRecorder()
+
+# Configure logging to both file and console
 logging.basicConfig(
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    handlers=[
+        logging.FileHandler('bot.log'),
+        logging.StreamHandler()  # This will output to console
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -75,144 +85,262 @@ def get_video_info(video_id):
         logger.error(f"Error getting video info: {str(e)}")
     return None
 
-async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle search command"""
-    query = " ".join(context.args)
-    
-    if not query:
-        help_text = (
-            "🔍 How to search:\n\n"
-            "Use the command followed by the song name:\n"
-            "/search <song name>\n\n"
-            "Examples:\n"
-            "• /search Sunflower Post Malone\n"
-            "• /search Shape of You\n"
-            "• /search Blinding Lights The Weeknd"
+def search_youtube(query):
+    """Search YouTube for videos"""
+    try:
+        # Sanitize query
+        sanitized_query = re.sub(r'[^\w\s-]', '', query)
+        if not sanitized_query:
+            raise ValueError("Invalid search query")
+
+        # Configure yt-dlp options for search
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True,
+            'default_search': 'ytsearch',
+            'max_downloads': 5
+        }
+
+        results = []
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Search for videos
+            search_results = ydl.extract_info(f"ytsearch5:{sanitized_query}", download=False)
+            
+            if not search_results or 'entries' not in search_results:
+                logger.error(f"No results found for query: {sanitized_query}")
+                return []
+
+            # Process each result
+            for entry in search_results['entries']:
+                if entry:
+                    # Safely get duration and view count
+                    duration = entry.get('duration', 0)
+                    if isinstance(duration, (int, float)):
+                        minutes = int(duration // 60)
+                        seconds = int(duration % 60)
+                        duration_str = f"{minutes}:{seconds:02d}"
+                    else:
+                        duration_str = "Unknown"
+
+                    view_count = entry.get('view_count', 0)
+                    if isinstance(view_count, (int, float)):
+                        view_str = f"{int(view_count):,}"
+                    else:
+                        view_str = "Unknown"
+
+                    results.append({
+                        'id': entry.get('id', ''),
+                        'title': entry.get('title', 'Unknown Title'),
+                        'artist': entry.get('uploader', 'Unknown Artist'),
+                        'duration_str': duration_str,
+                        'view_str': view_str
+                    })
+
+        return results
+
+    except Exception as e:
+        logger.error(f"Error in search_youtube: {str(e)}")
+        raise
+
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the /search command"""
+    if not context.args:
+        await update.message.reply_text(
+            "Please provide a song name to search.\n"
+            "Example: /search shape of you"
         )
-        await update.message.reply_text(help_text)
         return
 
+    query = ' '.join(context.args)
+    user_id = update.effective_user.id
+    
     try:
-        logger.info(f"Searching for: {query}")
-        # Direct YouTube search
-        search_url = f"https://www.youtube.com/results?search_query={query}&sp=EgIQAQ%253D%253D"
-        logger.info(f"Search URL: {search_url}")
+        # Log the search attempt
+        logger.info(f"User {user_id} searching for: {query}")
+        await update.message.reply_text(f"🔍 Searching for: {query}")
         
-        response = requests.get(search_url)
-        logger.info(f"Search response status: {response.status_code}")
-        
-        if response.status_code != 200:
-            logger.error(f"Search request failed with status code: {response.status_code}")
-            raise ValueError(f"Search request failed with status code: {response.status_code}")
-        
-        # Extract video IDs from the response
-        video_ids = []
-        start_index = 0
-        while len(video_ids) < 5:
-            start_index = response.text.find('"videoId":"', start_index)
-            if start_index == -1:
-                logger.info("No more video IDs found in response")
-                break
-            start_index += 11
-            end_index = response.text.find('"', start_index)
-            video_id = response.text[start_index:end_index]
-            if video_id not in video_ids:
-                video_ids.append(video_id)
-                logger.info(f"Found video ID: {video_id}")
-        
-        if not video_ids:
-            logger.error("No video IDs found in the response")
-            raise ValueError("No results found")
-            
-        # Get video details
-        results = []
-        for video_id in video_ids:
-            try:
-                logger.info(f"Getting details for video ID: {video_id}")
-                info = get_video_info(video_id)
-                if info:
-                    results.append({
-                        'title': info['title'],
-                        'id': video_id
-                    })
-                    logger.info(f"Successfully got details for: {info['title']}")
-            except Exception as e:
-                logger.error(f"Error getting details for video {video_id}: {str(e)}")
-                continue
+        # Perform the search
+        results = search_youtube(query)
         
         if not results:
-            logger.error("No valid results found after processing")
-            raise ValueError("No results found")
-            
-        # Create keyboard markup
+            error_msg = f"No results found for query: {query}"
+            logger.warning(error_msg)
+            data_recorder.log_error(
+                user_id,
+                "search_no_results",
+                error_msg,
+                {"query": query}
+            )
+            await update.message.reply_text(
+                "❌ No results found. Please try:\n"
+                "• Different search terms\n"
+                "• More specific song title\n"
+                "• Including artist name"
+            )
+            return
+
+        # Create keyboard with results
         keyboard = []
         for result in results:
-            keyboard.append([InlineKeyboardButton(result['title'], callback_data=result['id'])])
-        
+            # Create button text
+            button_text = (
+                f"🎵 {result['title']}\n"
+                f"👤 {result['artist']}\n"
+                f"⏱ {result['duration_str']} | 👁 {result['view_str']}"
+            )
+            
+            callback_data = f"download_{result['id']}"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("🎵 Select a song:", reply_markup=reply_markup)
+        await update.message.reply_text(
+            "Select a song to download:",
+            reply_markup=reply_markup
+        )
+        
+        # Log successful search
+        data_recorder.log_search(
+            user_id,
+            query,
+            len(results)
+        )
+        
+    except ValueError as ve:
+        error_msg = str(ve)
+        logger.warning(f"Invalid search query from user {user_id}: {error_msg}")
+        data_recorder.log_error(
+            user_id,
+            "invalid_query",
+            error_msg,
+            {"query": query}
+        )
+        await update.message.reply_text(
+            "❌ Invalid search query. Please use only letters, numbers, and spaces."
+        )
         
     except Exception as e:
-        logger.error(f"Error in search: {str(e)}")
-        await update.message.reply_text(f"⚠️ Error: {str(e)}")
+        error_msg = f"Error searching for '{query}': {str(e)}"
+        logger.error(error_msg)
+        data_recorder.log_error(
+            user_id,
+            "search_error",
+            error_msg,
+            {"query": query}
+        )
+        await update.message.reply_text(
+            "❌ An error occurred while searching. Please try again in a few moments."
+        )
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button callbacks"""
     query = update.callback_query
     await query.answer()
     
-    # Edit the message to show downloading status
-    await query.edit_message_text("⏬ Downloading your song...")
-    
-    video_id = query.data
-    try:
-        # Get video info first
-        video_info = get_video_info(video_id)
-        if not video_info:
-            raise ValueError("Could not get video information")
+    if query.data.startswith("download_"):
+        video_id = query.data.split("_")[1]
+        try:
+            await query.edit_message_text("⏳ Downloading... Please wait.")
             
-        # Create a safe filename
-        safe_title = "".join(c for c in video_info['title'] if c.isalnum() or c in (' ', '-', '_')).strip()
-        safe_author = "".join(c for c in video_info['author'] if c.isalnum() or c in (' ', '-', '_')).strip()
-        filename = f"{safe_author} - {safe_title}"
-        
-        # Configure yt-dlp options
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-            'outtmpl': f'downloads/{filename}.%(ext)s',
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': True,
-        }
-        
-        # Download the audio
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info(f"Downloading: {filename}")
-            ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
-        
-        # Send the audio file
-        audio_path = f'downloads/{filename}.mp3'
-        if os.path.exists(audio_path):
-            await query.message.reply_audio(
-                audio=open(audio_path, 'rb'),
-                title=video_info['title'],
-                performer=video_info['author']
-            )
+            # Get video info
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': True
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                title = info.get('title', 'Unknown Title')
+                artist = info.get('uploader', 'Unknown Artist')
+            
+            # Download the audio
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'outtmpl': f'downloads/{video_id}.%(ext)s',
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+            
+            # Send the audio file
+            audio_path = f'downloads/{video_id}.mp3'
+            with open(audio_path, 'rb') as audio:
+                await query.message.reply_audio(
+                    audio,
+                    title=title,
+                    performer=artist,
+                    caption=f"🎵 {title}\n👤 {artist}"
+                )
+            
             # Clean up
             os.remove(audio_path)
-            # Delete the downloading message
-            await query.message.delete()
-        else:
-            raise FileNotFoundError("Audio file not found after download")
             
-    except Exception as e:
-        logger.error(f"Error in button callback: {str(e)}")
-        await query.edit_message_text(f"❌ Error: {str(e)}")
+            # Log the download
+            data_recorder.log_download(
+                update.effective_user.id,
+                video_id,
+                title,
+                artist
+            )
+            
+        except Exception as e:
+            error_msg = f"Error downloading video {video_id}: {str(e)}"
+            logger.error(error_msg)
+            data_recorder.log_error(
+                update.effective_user.id,
+                "download_error",
+                error_msg,
+                {"video_id": video_id}
+            )
+            await query.edit_message_text("❌ An error occurred while downloading. Please try again later.")
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the /stats command to show bot statistics"""
+    stats = data_recorder.get_stats()
+    if stats:
+        message = (
+            "📊 Bot Statistics:\n\n"
+            f"Total Searches: {stats['total_searches']}\n"
+            f"Total Downloads: {stats['total_downloads']}\n"
+            f"Total Errors: {stats['total_errors']}\n\n"
+            "Last Updated: {}\n".format(
+                datetime.fromisoformat(stats['last_updated']).strftime('%Y-%m-%d %H:%M:%S')
+            )
+        )
+        
+        # Add top 5 popular searches
+        if stats['popular_searches']:
+            message += "\n🔍 Top 5 Popular Searches:\n"
+            sorted_searches = sorted(
+                stats['popular_searches'].items(),
+                key=lambda x: x[1],
+                reverse=True
+            )[:5]
+            for search, count in sorted_searches:
+                message += f"- {search}: {count} times\n"
+        
+        # Add top 5 popular artists
+        if stats['popular_artists']:
+            message += "\n👤 Top 5 Popular Artists:\n"
+            sorted_artists = sorted(
+                stats['popular_artists'].items(),
+                key=lambda x: x[1],
+                reverse=True
+            )[:5]
+            for artist, count in sorted_artists:
+                message += f"- {artist}: {count} times\n"
+        
+        await update.message.reply_text(message)
+    else:
+        await update.message.reply_text("❌ Unable to retrieve statistics at this time.")
 
 def main():
     """Start the bot"""
@@ -222,7 +350,8 @@ def main():
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("search", search))
+    application.add_handler(CommandHandler("search", search_command))
+    application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     
     # Create downloads directory if it doesn't exist
