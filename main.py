@@ -30,7 +30,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Get bot token from environment variable
-TOKEN = os.getenv('BOT_TOKEN')
+TOKEN = '8127175426:AAGYZoy3-l4S5eiKntajUES7IABAhGnwOdg'
 if not TOKEN:
     raise ValueError("No BOT_TOKEN found in environment variables")
 
@@ -115,6 +115,12 @@ def search_youtube(query):
             # Process each result
             for entry in search_results['entries']:
                 if entry:
+                    video_id = entry.get('id', '')
+                    # Skip results with invalid video IDs
+                    if not video_id or len(video_id) != 11:  # YouTube video IDs are exactly 11 characters
+                        logger.warning(f"Skipping result with invalid video ID: {video_id}")
+                        continue
+                        
                     # Safely get duration and view count
                     duration = entry.get('duration', 0)
                     if isinstance(duration, (int, float)):
@@ -159,7 +165,6 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         # Log the search attempt
         logger.info(f"User {user_id} searching for: {query}")
-        await update.message.reply_text(f"🔍 Searching for: {query}")
         
         # Perform the search
         results = search_youtube(query)
@@ -184,14 +189,38 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Create keyboard with results
         keyboard = []
         for result in results:
-            # Create button text
+            # Format view count to be more concise (e.g., 1.2M, 100K)
+            view_count = result['view_str']
+            if view_count != "Unknown":
+                try:
+                    views = int(view_count.replace(',', ''))
+                    if views >= 1_000_000:
+                        view_str = f"{views/1_000_000:.1f}M"
+                    elif views >= 1_000:
+                        view_str = f"{views/1_000:.1f}K"
+                    else:
+                        view_str = str(views)
+                except ValueError:
+                    view_str = view_count
+            else:
+                view_str = "0"
+
+            # Create button text with more characters and better formatting
             button_text = (
-                f"🎵 {result['title']}\n"
-                f"👤 {result['artist']}\n"
-                f"⏱ {result['duration_str']} | 👁 {result['view_str']}"
+                f"🎵 {result['title'][:50]}\n"  # Show up to 50 characters of title
+                f"👤 {result['artist'][:30]}\n"  # Show up to 30 characters of artist
+                f"⏱ {result['duration_str']} | {view_str} views"  # Always show duration, concise views
             )
             
-            callback_data = f"download_{result['id']}"
+            # Add ellipsis if title or artist is truncated
+            if len(result['title']) > 50:
+                button_text = button_text.replace(result['title'][:50], result['title'][:47] + "...")
+            if len(result['artist']) > 30:
+                button_text = button_text.replace(result['artist'][:30], result['artist'][:27] + "...")
+            
+            # Use a shorter prefix and encode the video ID to handle special characters
+            video_id = result['id']
+            callback_data = f"dl_{video_id}"  # Keep the full video ID
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -238,10 +267,29 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    if query.data.startswith("download_"):
-        video_id = query.data.split("_")[1]
+    if query.data.startswith("dl_"):
+        # Get the full video ID after the prefix
+        video_id = query.data[3:]  # Get everything after "dl_"
+        
+        # Validate video ID
+        if not video_id or len(video_id) != 11:  # YouTube video IDs are exactly 11 characters
+            error_msg = f"Invalid video ID: {video_id}"
+            logger.error(error_msg)
+            data_recorder.log_error(
+                update.effective_user.id,
+                "invalid_video_id",
+                error_msg,
+                {"video_id": video_id}
+            )
+            await query.edit_message_text("❌ Invalid video ID. Please try searching again.")
+            return
+            
         try:
-            await query.edit_message_text("⏳ Downloading... Please wait.")
+            # Delete the selection message
+            await query.message.delete()
+            
+            # Send temporary downloading message
+            downloading_msg = await query.message.reply_text("⏳ Downloading...")
             
             # Get video info
             ydl_opts = {
@@ -283,6 +331,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Clean up
             os.remove(audio_path)
             
+            # Delete the downloading message
+            await downloading_msg.delete()
+            
             # Log the download
             data_recorder.log_download(
                 update.effective_user.id,
@@ -300,7 +351,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 error_msg,
                 {"video_id": video_id}
             )
-            await query.edit_message_text("❌ An error occurred while downloading. Please try again later.")
+            # Delete the downloading message if it exists
+            try:
+                await downloading_msg.delete()
+            except:
+                pass
+            await query.message.reply_text("❌ An error occurred while downloading. Please try again later.")
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle the /stats command to show bot statistics"""
